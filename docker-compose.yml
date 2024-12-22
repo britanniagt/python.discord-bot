@@ -1,0 +1,100 @@
+# This docker compose is used for quick setups of the site and database which
+# the bot project relies on for testing. Use it if you haven't got a
+# ready-to-use site environment already setup.
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-file: "5"
+    max-size: "10m"
+
+services:
+  postgres:
+    logging : *default-logging
+    restart: unless-stopped
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_DB: pysite
+      POSTGRES_PASSWORD: pysite
+      POSTGRES_USER: pysite
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pysite"]
+      interval: 2s
+      timeout: 1s
+      retries: 5
+
+  redis:
+    logging : *default-logging
+    restart: unless-stopped
+    image: redis:latest
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  metricity:
+    logging : *default-logging
+    restart: on-failure  # USE_METRICITY=false will stop the container, so this ensures it only restarts on error
+    depends_on:
+      postgres:
+        condition: service_healthy
+    image: ghcr.io/python-discord/metricity:latest
+    env_file:
+      - .env
+    environment:
+      DATABASE_URI: postgres://pysite:pysite@postgres/metricity
+      USE_METRICITY: ${USE_METRICITY-false}
+    volumes:
+      - .:/tmp/bot:ro
+
+  snekbox:
+    logging : *default-logging
+    restart: unless-stopped
+    image: ghcr.io/python-discord/snekbox:latest
+    init: true
+    ipc: none
+    ports:
+     - "127.0.0.1:8060:8060"
+    privileged: true
+
+  web:
+    logging : *default-logging
+    restart: unless-stopped
+    image: ghcr.io/python-discord/site:latest
+    command: ["python", "manage.py", "run"]
+    networks:
+      default:
+        aliases:
+          - api.web
+          - admin.web
+          - staff.web
+    ports:
+      - "127.0.0.1:8000:8000"
+    tty: true
+    depends_on:
+      - metricity
+    environment:
+      DATABASE_URL: postgres://pysite:pysite@postgres:5432/pysite
+      METRICITY_DB_URL: postgres://pysite:pysite@postgres:5432/metricity
+      SECRET_KEY: suitable-for-development-only
+      STATIC_ROOT: /var/www/static
+
+  bot:
+    logging : *default-logging
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/bot:ro
+    tty: true
+    depends_on:
+      - web
+      - redis
+      - snekbox
+    env_file:
+      - .env
+    environment:
+      API_KEYS_SITE_API: "badbot13m0n8f570f942013fc818f234916ca531"
+      URLS_SITE_API: "http://web:8000/api"
+      URLS_SNEKBOX_EVAL_API: "http://snekbox:8060/eval"
+      REDIS_HOST: "redis"
+      STATS_STATSD_HOST: "http://localhost"
